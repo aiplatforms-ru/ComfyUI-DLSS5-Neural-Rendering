@@ -7,4 +7,3 @@ loading it. The repository does not distribute `nvngx_dlssnr.dll`.
 Please report security problems privately to the repository owner instead of
 opening a public issue containing exploit details.
 
-

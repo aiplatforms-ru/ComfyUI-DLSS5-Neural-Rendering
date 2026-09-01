@@ -62,4 +62,3 @@ if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $Output)) {
 }
 
 Write-Host "Built $Output"
-

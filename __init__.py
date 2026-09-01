@@ -10,4 +10,3 @@ async def comfy_entrypoint() -> DlssNeuralRenderingExtension:
 if False:
     NODE_CLASS_MAPPINGS = {"Dlss5NeuralRendering": object}
 
-

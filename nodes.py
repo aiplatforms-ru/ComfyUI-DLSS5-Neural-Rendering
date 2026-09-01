@@ -772,4 +772,3 @@ class DlssNeuralRenderingExtension(ComfyExtension):
     @override
     async def get_node_list(self) -> list[type[io.ComfyNode]]:
         return [Dlss5NeuralRendering]
-

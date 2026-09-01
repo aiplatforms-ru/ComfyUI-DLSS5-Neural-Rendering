@@ -132,4 +132,3 @@ References:
 - <https://github.com/jlrouzies-fr/DLSS5-Feeder>
 - <https://github.com/NVIDIA/DLSS>
 - <https://www.nvidia.com/en-us/geforce/news/dlss5-breakthrough-in-visual-fidelity-for-games/>
-

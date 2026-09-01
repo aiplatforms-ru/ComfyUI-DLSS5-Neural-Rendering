@@ -8,4 +8,3 @@
 - Causal GPU optical flow with confidence, scene-cut resets, and diagnostics.
 - Independent-image and video-sequence processing modes.
 
-

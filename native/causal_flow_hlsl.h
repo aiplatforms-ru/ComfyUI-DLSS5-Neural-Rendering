@@ -347,4 +347,3 @@ void ExpandFlow(uint3 dispatchId : SV_DispatchThreadID)
     ScalarOutput[dispatchId.xy] = confidence;
 }
 )HLSL";
-

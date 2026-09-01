@@ -21,4 +21,3 @@ QuantMotion/LumaFlow shader supplied for this private integration and by the
 public AMD FidelityFX Optical Flow documentation. LumeniteFX is authored by
 Afzaal (Kaidō) and distributed under the AGNYA license; no LumeniteFX source is
 redistributed as a ReShade shader by this node.
-
