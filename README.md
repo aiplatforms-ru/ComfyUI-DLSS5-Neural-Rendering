@@ -13,6 +13,22 @@ The implementation has no Unity, ReShade, game, window, swapchain, or geometry
 dependency. A short-lived native worker is managed automatically by the Python
 node so an experimental NGX runtime failure cannot take the ComfyUI process down.
 
+## Image examples
+
+All three examples use the same input and default preset; only `style` changes.
+
+### Default
+
+![Default DLSS 5 Neural Rendering style](docs/style-default.png)
+
+### Natural
+
+![Natural DLSS 5 Neural Rendering style](docs/style-natural.png)
+
+### Cinematic
+
+![Cinematic DLSS 5 Neural Rendering style](docs/style-cinematic.png)
+
 ## Requirements
 
 - Windows 10/11, a supported NVIDIA RTX GPU, and a compatible NVIDIA driver.
