@@ -5,8 +5,6 @@
 > feature contract that may change between runtime or driver versions. This
 > project is not affiliated with or endorsed by NVIDIA.
 
-![DLSS 5 Neural Rendering node in ComfyUI](docs/node-example.png)
-
 An experimental Windows custom node that invokes NVIDIA's DLSS Neural Rendering
 feature 18 as a headless Direct3D 12 post-process. It is a normal ComfyUI node:
 connect an `IMAGE` or video-frame batch and receive an `IMAGE` batch back.
