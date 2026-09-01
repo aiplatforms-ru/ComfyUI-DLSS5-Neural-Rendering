@@ -1,0 +1,12 @@
+native/.deps/
+native/*.obj
+native/*.pdb
+runtime/*.dll
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.idea/
+.vscode/
+*.log
+

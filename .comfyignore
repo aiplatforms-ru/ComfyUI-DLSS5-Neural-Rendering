@@ -1,0 +1,10 @@
+native/.deps/
+runtime/*.dll
+__pycache__/
+*.pyc
+.git/
+.github/
+.pytest_cache/
+.ruff_cache/
+
+
