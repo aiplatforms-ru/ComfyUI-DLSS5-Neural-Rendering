@@ -33,45 +33,110 @@ All three examples use the same input and default preset; only `style` changes.
 
 - Windows 10/11, a supported NVIDIA RTX GPU, and a compatible NVIDIA driver.
 - An NVIDIA-signed `nvngx_dlssnr.dll`. The DLL is **not** redistributed here.
-- The included `bin/dlssnr_worker.exe`. Release packages can ship it prebuilt;
-  source checkouts can build it with Visual Studio 2022 Build Tools.
+- The included `bin/dlssnr_worker.exe` (already present in this repository).
 - The Python packages in `requirements.txt`, which add the depth-model loader.
 
-## Installation
+## Installation — Windows portable build
 
-Clone the repository into `ComfyUI/custom_nodes`:
-
-```powershell
-cd ComfyUI/custom_nodes
-git clone https://github.com/aiplatforms-ru/ComfyUI-DLSS5-Neural-Rendering.git
-cd ComfyUI-DLSS5-Neural-Rendering
-..\..\..\python_embeded\python.exe -m pip install -r requirements.txt
-```
-
-The relative Python path above is for the Windows portable build. For a venv
-installation, run `python -m pip install -r requirements.txt` in the same
-directory. Restart ComfyUI after installation.
-
-Place a legally obtained, NVIDIA-signed `nvngx_dlssnr.dll` at:
+The two required locations are:
 
 ```text
-ComfyUI/models/dlssnr/nvngx_dlssnr.dll
+ComfyUI_windows_portable\
+├── python_embeded\
+└── ComfyUI\
+    ├── custom_nodes\
+    │   └── ComfyUI-DLSS5-Neural-Rendering\
+    │       ├── bin\dlssnr_worker.exe
+    │       ├── nodes.py
+    │       └── ...
+    └── models\
+        └── dlssnr\
+            └── nvngx_dlssnr.dll
 ```
 
-The DLL is deliberately not included in this repository. An explicit
-`runtime_directory` value or `COMFYUI_DLSSNR_RUNTIME` can override the default
-location when needed.
+### 1. Install the custom node
+
+Open PowerShell in the **portable root folder** — the folder containing both
+`python_embeded` and `ComfyUI` — then run:
+
+```powershell
+git clone https://github.com/aiplatforms-ru/ComfyUI-DLSS5-Neural-Rendering.git .\ComfyUI\custom_nodes\ComfyUI-DLSS5-Neural-Rendering
+.\python_embeded\python.exe -m pip install -r .\ComfyUI\custom_nodes\ComfyUI-DLSS5-Neural-Rendering\requirements.txt
+```
+
+Alternatively, download the repository ZIP and extract its contents to exactly:
+
+```text
+ComfyUI_windows_portable\ComfyUI\custom_nodes\ComfyUI-DLSS5-Neural-Rendering\
+```
+
+Do not leave an extra nested folder such as
+`ComfyUI-DLSS5-Neural-Rendering-main\ComfyUI-DLSS5-Neural-Rendering-main\`.
+
+### 2. Copy the DLSS Neural Rendering runtime
+
+Create this folder if it does not exist:
+
+```powershell
+New-Item -ItemType Directory -Force .\ComfyUI\models\dlssnr
+```
+
+Copy your legally obtained, NVIDIA-signed `nvngx_dlssnr.dll` into it. The final
+absolute layout must be:
+
+```text
+<portable root>\ComfyUI\models\dlssnr\nvngx_dlssnr.dll
+```
+
+For example, if the portable build is installed at `E:\ComfyUI`, the exact path
+is:
+
+```text
+E:\ComfyUI\ComfyUI\models\dlssnr\nvngx_dlssnr.dll
+```
+
+**Do not copy the DLL into RHI, a game directory, or another program's cache.**
+The node has no automatic dependency on any of those locations. The DLL is not
+included in this repository.
+
+### 3. Restart ComfyUI
+
+ComfyUI imports custom-node Python code only during startup. Fully close and
+restart ComfyUI after installing or updating this node.
+
+## Installation — venv or manual ComfyUI
+
+Clone the repository under the same ComfyUI installation that you run:
+
+```powershell
+cd C:\path\to\ComfyUI\custom_nodes
+git clone https://github.com/aiplatforms-ru/ComfyUI-DLSS5-Neural-Rendering.git
+cd ComfyUI-DLSS5-Neural-Rendering
+python -m pip install -r requirements.txt
+```
+
+Copy the DLL to:
+
+```text
+C:\path\to\ComfyUI\models\dlssnr\nvngx_dlssnr.dll
+```
 
 On first use, the node downloads the Apache-2.0 Depth Anything V2 Small model
-into `ComfyUI/models/dlssnr/`. Motion does not download or load a neural model.
+into the same `ComfyUI/models/dlssnr/` directory. Motion estimation is provided
+by the included D3D12 worker and does not download another neural model.
 
-The node looks for the runtime in this order:
+## Runtime location
 
-1. `runtime_directory` in the node (folder or full DLL path);
-2. `ComfyUI/models/dlssnr/nvngx_dlssnr.dll`;
-3. the `COMFYUI_DLSSNR_RUNTIME` environment variable.
+The normal and recommended location is always:
 
-The node never reads the runtime from RHI, a game, or another application's cache.
+```text
+ComfyUI\models\dlssnr\nvngx_dlssnr.dll
+```
+
+The advanced `runtime_directory` widget and `COMFYUI_DLSSNR_RUNTIME` environment
+variable are explicit user overrides only. When both are empty, the node uses
+only its own ComfyUI model directory. It never searches RHI, games, DriverStore,
+or another application's cache.
 
 ## Build the native backend
 
