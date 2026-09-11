@@ -52,9 +52,15 @@ The relative Python path above is for the Windows portable build. For a venv
 installation, run `python -m pip install -r requirements.txt` in the same
 directory. Restart ComfyUI after installation.
 
-Place a legally obtained, NVIDIA-signed `nvngx_dlssnr.dll` in `runtime/`, set
-`COMFYUI_DLSSNR_RUNTIME`, or select its directory with `runtime_directory`.
-The DLL is deliberately not included in this repository.
+Place a legally obtained, NVIDIA-signed `nvngx_dlssnr.dll` at:
+
+```text
+ComfyUI/models/dlssnr/nvngx_dlssnr.dll
+```
+
+The DLL is deliberately not included in this repository. An explicit
+`runtime_directory` value or `COMFYUI_DLSSNR_RUNTIME` can override the default
+location when needed.
 
 On first use, the node downloads the Apache-2.0 Depth Anything V2 Small model
 into `ComfyUI/models/dlssnr/`. Motion does not download or load a neural model.
@@ -62,9 +68,10 @@ into `ComfyUI/models/dlssnr/`. Motion does not download or load a neural model.
 The node looks for the runtime in this order:
 
 1. `runtime_directory` in the node (folder or full DLL path);
-2. the `COMFYUI_DLSSNR_RUNTIME` environment variable;
-3. this custom node's `runtime/` directory;
-4. the newest `%LOCALAPPDATA%/RHI/DLSS-NR/*/` directory, when RHI is installed.
+2. `ComfyUI/models/dlssnr/nvngx_dlssnr.dll`;
+3. the `COMFYUI_DLSSNR_RUNTIME` environment variable.
+
+The node never reads the runtime from RHI, a game, or another application's cache.
 
 ## Build the native backend
 

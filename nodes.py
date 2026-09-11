@@ -3,7 +3,6 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
-import re
 import subprocess
 from multiprocessing import shared_memory
 from pathlib import Path
@@ -69,33 +68,18 @@ def _progress_step(progress) -> None:
         progress.update(1)
 
 
-def _version_key(path: Path) -> tuple[int, ...]:
-    numbers = re.findall(r"\d+", path.name)
-    return tuple(int(number) for number in numbers) if numbers else (0,)
-
-
 def _find_runtime(configured_path: str) -> Path:
     candidates: list[Path] = []
     if configured_path.strip():
         candidates.append(Path(os.path.expandvars(configured_path.strip())).expanduser())
 
+    # Node-owned runtime location. Never depend on another application's
+    # installation or cache directory.
+    candidates.append(_models_root())
+
     environment_path = os.environ.get("COMFYUI_DLSSNR_RUNTIME", "").strip()
     if environment_path:
         candidates.append(Path(os.path.expandvars(environment_path)).expanduser())
-
-    candidates.append(_NODE_ROOT / "runtime")
-
-    local_app_data = os.environ.get("LOCALAPPDATA")
-    if local_app_data:
-        rhi_root = Path(local_app_data) / "RHI" / "DLSS-NR"
-        if rhi_root.is_dir():
-            candidates.extend(
-                sorted(
-                    (entry for entry in rhi_root.iterdir() if entry.is_dir()),
-                    key=_version_key,
-                    reverse=True,
-                )
-            )
 
     checked: list[str] = []
     for candidate in candidates:
@@ -107,7 +91,7 @@ def _find_runtime(configured_path: str) -> Path:
     locations = "\n  - ".join(checked)
     raise FileNotFoundError(
         f"{_RUNTIME_NAME} was not found. Put the NVIDIA-signed DLL in "
-        f"'{_NODE_ROOT / 'runtime'}', set COMFYUI_DLSSNR_RUNTIME, or enter its folder "
+        f"'{_models_root()}', set COMFYUI_DLSSNR_RUNTIME, or enter its folder "
         f"in the node. Checked:\n  - {locations}"
     )
 
@@ -583,8 +567,8 @@ class Dlss5NeuralRendering(io.ComfyNode):
                     optional=True,
                     advanced=True,
                     tooltip=(
-                        "Folder containing nvngx_dlssnr.dll, or the full DLL path. Empty uses the node's "
-                        "runtime folder, COMFYUI_DLSSNR_RUNTIME, then an installed RHI cache."
+                        "Folder containing nvngx_dlssnr.dll, or the full DLL path. Empty uses "
+                        "ComfyUI/models/dlssnr; COMFYUI_DLSSNR_RUNTIME is also supported."
                     ),
                 ),
             ],
