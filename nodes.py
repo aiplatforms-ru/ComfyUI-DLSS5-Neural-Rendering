@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import contextlib
 import logging
+import math
 import os
 import subprocess
 from multiprocessing import shared_memory
@@ -16,7 +16,9 @@ from typing_extensions import override
 _NODE_ROOT = Path(__file__).resolve().parent
 _WORKER = _NODE_ROOT / "bin" / "dlssnr_worker.exe"
 _RUNTIME_NAME = "nvngx_dlssnr.dll"
-_IMAGE_DEPTH_MODEL = "depth-anything/Depth-Anything-V2-Small-hf"
+_DEPTH_MODEL_NAME = "depth_anything_3_mono_large.safetensors"
+_DEPTH_PROCESS_RESOLUTION = 504
+_DEPTH_MODEL_CACHE: dict[str, object] = {}
 
 
 def _models_root() -> Path:
@@ -30,28 +32,28 @@ def _models_root() -> Path:
     return root
 
 
-def _inference_device(memory_required: int) -> torch.device:
+def _load_depth_model():
     try:
-        import comfy.model_management as model_management
+        import comfy.sd
+        import folder_paths
+    except ImportError as error:
+        raise RuntimeError("Depth Anything 3 requires a current ComfyUI installation.") from error
 
-        device = model_management.get_torch_device()
-        # Do not unload every ComfyUI model: that can move tens of gigabytes
-        # from VRAM into system RAM/pagefile. Ask ComfyUI to make only the
-        # amount needed by the two small causal guide networks and NGX.
-        model_management.free_memory(memory_required, device)
-        return device
-    except (ImportError, AttributeError):
-        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-
-def _release_inference_memory() -> None:
-    try:
-        import comfy.model_management as model_management
-
-        model_management.soft_empty_cache()
-    except (ImportError, AttributeError):
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+    path = folder_paths.get_full_path("geometry_estimation", _DEPTH_MODEL_NAME)
+    if path is None:
+        expected = Path(folder_paths.models_dir) / "geometry_estimation" / _DEPTH_MODEL_NAME
+        raise FileNotFoundError(
+            f"Depth Anything 3 model was not found. Put {_DEPTH_MODEL_NAME} in '{expected.parent}'. "
+            f"Expected file: {expected}"
+        )
+    resolved = str(Path(path).resolve())
+    cached = _DEPTH_MODEL_CACHE.get(resolved)
+    if cached is None:
+        # The Comfy-native single-file loader avoids a second Transformers cache and
+        # lets ComfyUI's model manager move the model between GPU and CPU as needed.
+        cached = comfy.sd.load_diffusion_model(resolved, model_options={"dtype": torch.float16})
+        _DEPTH_MODEL_CACHE[resolved] = cached
+    return cached
 
 
 def _progress(total: int):
@@ -98,6 +100,20 @@ def _find_runtime(configured_path: str) -> Path:
 
 def _multiple_of(value: float, multiple: int, minimum: int) -> int:
     return max(minimum, int(round(value / multiple)) * multiple)
+
+
+def _target_dimensions(width: int, height: int, target_megapixels: float) -> tuple[int, int]:
+    """Preserve aspect ratio and choose D3D-friendly dimensions near the target area."""
+    if target_megapixels <= 0.0:
+        return width, height
+    scale = math.sqrt((target_megapixels * 1_000_000.0) / (width * height))
+    target_width = _multiple_of(width * scale, 8, 8)
+    target_height = _multiple_of(height * scale, 8, 8)
+    if target_width > 65535 or target_height > 65535:
+        raise ValueError(
+            f"target_megapixels produces an unsupported {target_width}x{target_height} image."
+        )
+    return target_width, target_height
 
 
 def _motion_preview(motion: torch.Tensor) -> torch.Tensor:
@@ -160,6 +176,8 @@ def _prepare_frame(
     images: torch.Tensor,
     frame_index: int,
     rgba: torch.Tensor,
+    height: int,
+    width: int,
 ) -> tuple[torch.Tensor, torch.Tensor | None]:
     """Prepare one frame only; never materialize a second full video batch."""
     source = images[frame_index].detach()
@@ -168,14 +186,30 @@ def _prepare_frame(
     rgb = source[..., :3]
     if rgb.shape[-1] == 1:
         rgb = rgb.expand(*rgb.shape[:-1], 3)
+    alpha = source[..., 3] if source.shape[-1] == 4 else None
+    if rgb.shape[:2] != (height, width):
+        rgb = F.interpolate(
+            rgb.permute(2, 0, 1).unsqueeze(0),
+            size=(height, width),
+            mode="bicubic",
+            align_corners=False,
+            antialias=True,
+        )[0].permute(1, 2, 0).clamp_(0.0, 1.0).contiguous()
+        if alpha is not None:
+            alpha = F.interpolate(
+                alpha[None, None],
+                size=(height, width),
+                mode="bilinear",
+                align_corners=False,
+                antialias=True,
+            )[0, 0].clamp_(0.0, 1.0).contiguous()
     rgba[..., :3].copy_(rgb)
     rgba[..., 3].fill_(1.0)
-    alpha = source[..., 3] if source.shape[-1] == 4 else None
     return rgb, alpha
 
 
 class _CausalGuideEstimator:
-    """Current-frame depth and a tiny causal scene-cut detector.
+    """Current-frame Depth Anything 3 and a tiny causal scene-cut detector.
 
     Motion is deliberately not estimated in Python. The native D3D12 worker
     reconstructs current-to-previous flow and keeps its one-frame history on
@@ -192,11 +226,11 @@ class _CausalGuideEstimator:
         depth_range_stability: float,
     ) -> None:
         try:
-            from transformers import AutoImageProcessor, AutoModelForDepthEstimation
+            import comfy.model_management as model_management
+            from comfy.ldm.depth_anything_3 import preprocess as da3_preprocess
         except ImportError as error:
             raise RuntimeError(
-                "Neural depth requires transformers. Install this node's requirements.txt "
-                "in the ComfyUI Python environment and retry."
+                "Depth Anything 3 is not available in this ComfyUI build. Update ComfyUI and retry."
             ) from error
 
         self.height = height
@@ -204,32 +238,27 @@ class _CausalGuideEstimator:
         self.video = temporal_mode == "video sequence"
         self.scene_cut_sensitivity = scene_cut_sensitivity
         self.depth_range_stability = depth_range_stability
-        self.device = _inference_device(2 * 1024**3)
+        self.model_management = model_management
+        self.da3_preprocess = da3_preprocess
+        self.depth_model = _load_depth_model()
+        self.model_management.load_model_gpu(self.depth_model)
+        self.diffusion = self.depth_model.model.diffusion_model
+        self.device = self.model_management.get_torch_device()
+        self.dtype = self.diffusion.dtype if self.diffusion.dtype is not None else torch.float16
         self.previous_scene_luma: torch.Tensor | None = None
         self.depth_low: float | None = None
         self.depth_high: float | None = None
 
-        cache_dir = _models_root() / "huggingface"
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        self.depth_processor = AutoImageProcessor.from_pretrained(
-            _IMAGE_DEPTH_MODEL,
-            cache_dir=str(cache_dir),
-        )
-        self.depth_model = AutoModelForDepthEstimation.from_pretrained(
-            _IMAGE_DEPTH_MODEL,
-            cache_dir=str(cache_dir),
-        ).eval().to(self.device)
-
     def close(self) -> None:
         self.previous_scene_luma = None
+        self.diffusion = None
         self.depth_model = None
-        self.depth_processor = None
-        _release_inference_memory()
 
-    def _autocast(self):
-        if self.device.type == "cuda":
-            return torch.autocast(device_type="cuda", dtype=torch.float16)
-        return contextlib.nullcontext()
+    def reset_sequence(self) -> None:
+        """Start a separate causal sequence without reloading the depth model."""
+        self.previous_scene_luma = None
+        self.depth_low = None
+        self.depth_high = None
 
     def _scene_reset(self, rgb: torch.Tensor) -> bool:
         if not self.video:
@@ -260,13 +289,24 @@ class _CausalGuideEstimator:
         return raw_error > raw_threshold and structural_error > structural_threshold
 
     def _depth(self, rgb: torch.Tensor, reset: bool) -> torch.Tensor:
-        image = rgb.clamp(0.0, 1.0).mul(255.0).round().to(torch.uint8).numpy()
-        inputs = self.depth_processor(images=image, return_tensors="pt")
-        pixel_values = inputs["pixel_values"].to(self.device)
-        with torch.inference_mode(), self._autocast():
-            prediction = self.depth_model(pixel_values=pixel_values).predicted_depth[0].float()
+        self.model_management.load_model_gpu(self.depth_model)
+        image = rgb.clamp(0.0, 1.0).unsqueeze(0).to(self.device)
+        pixel_values = self.da3_preprocess.preprocess_image(
+            image,
+            process_res=_DEPTH_PROCESS_RESOLUTION,
+            method="upper_bound_resize",
+        ).to(dtype=self.dtype)
+        with torch.inference_mode():
+            result = self.diffusion(pixel_values)
+        prediction = result["depth"][0].float()
         prediction = torch.nan_to_num(prediction)
-        sample = prediction.flatten()
+        sky = result.get("sky")
+        sky_prediction = sky[0].float() if sky is not None else None
+        if sky_prediction is not None:
+            non_sky = self.da3_preprocess.compute_non_sky_mask(sky_prediction)
+            sample = prediction[non_sky] if non_sky.any() else prediction.flatten()
+        else:
+            sample = prediction.flatten()
         if sample.numel() > 1_000_000:
             sample = sample[:: (sample.numel() + 999_999) // 1_000_000]
         current_low, current_high = torch.quantile(
@@ -283,13 +323,18 @@ class _CausalGuideEstimator:
         if high - low < 1e-6:
             normalized = torch.full_like(prediction, 0.5)
         else:
-            normalized = prediction.sub(low).div(high - low).clamp_(0.0, 1.0)
+            # DA3 Mono predicts direct depth (near values are smaller). DLSS receives
+            # the same reversed-Z convention as the old depth preview: near=1, far=0.
+            normalized = 1.0 - prediction.sub(low).div(high - low).clamp_(0.0, 1.0)
+        if sky_prediction is not None:
+            normalized.masked_fill_(~self.da3_preprocess.compute_non_sky_mask(sky_prediction), 0.0)
         depth = F.interpolate(
             normalized[None, None],
             size=(self.height, self.width),
             mode="bicubic",
             align_corners=False,
-        )[0, 0]
+        )[0, 0].clamp_(0.0, 1.0)
+        del image, pixel_values, result, prediction, normalized, sample
         return depth.to(device="cpu", dtype=torch.float32).contiguous()
 
     def process(self, rgb: torch.Tensor) -> tuple[torch.Tensor, bool]:
@@ -480,7 +525,7 @@ class Dlss5NeuralRendering(io.ComfyNode):
             category="image/postprocessing",
             description=(
                 "Runs NVIDIA DLSS Neural Rendering feature 18 as a headless D3D12 post-process. "
-                "An IMAGE batch can be treated as independent pictures or a temporal video sequence."
+                "Supports target-megapixel resizing and 1-5 chained passes for images or video."
             ),
             search_aliases=["dlss", "dlss 5", "neural rendering", "nvidia", "video enhance"],
             inputs=[
@@ -521,7 +566,7 @@ class Dlss5NeuralRendering(io.ComfyNode):
                     max=0.75,
                     step=0.01,
                     tooltip=(
-                        "Causal smoothing of Depth Anything's normalization range using past values only. "
+                        "Causal smoothing of Depth Anything 3's normalization range using past values only. "
                         "The depth network itself always receives one current frame."
                     ),
                 ),
@@ -571,6 +616,30 @@ class Dlss5NeuralRendering(io.ComfyNode):
                         "ComfyUI/models/dlssnr; COMFYUI_DLSSNR_RUNTIME is also supported."
                     ),
                 ),
+                # Keep new widgets at the end so existing saved workflows retain their
+                # positional widget values when this node version is loaded.
+                io.Float.Input(
+                    "target_megapixels",
+                    default=0.0,
+                    min=0.0,
+                    max=64.0,
+                    step=0.1,
+                    tooltip=(
+                        "Resize each input frame to this total pixel area before the first DLSS-NR pass, "
+                        "while preserving aspect ratio. 0 keeps the source dimensions."
+                    ),
+                ),
+                io.Int.Input(
+                    "passes",
+                    default=1,
+                    min=1,
+                    max=5,
+                    step=1,
+                    tooltip=(
+                        "Run the output back through the same DLSS-NR feature this many times. "
+                        "Depth and motion guides are recomputed for every pass."
+                    ),
+                ),
             ],
             outputs=[
                 io.Image.Output("images"),
@@ -604,13 +673,19 @@ class Dlss5NeuralRendering(io.ComfyNode):
         depth_inverted: bool,
         adapter_index: int,
         runtime_directory: str = "",
+        target_megapixels: float = 0.0,
+        passes: int = 1,
     ) -> io.NodeOutput:
         runtime = _find_runtime(runtime_directory)
         if images.ndim != 4 or images.shape[-1] not in (1, 3, 4):
             raise ValueError(
                 f"images must be BHWC with 1, 3, or 4 channels; got {tuple(images.shape)}."
             )
-        frames, height, width, source_channels = images.shape
+        passes = int(passes)
+        if not 1 <= passes <= 5:
+            raise ValueError(f"passes must be in the range 1..5; got {passes}.")
+        frames, source_height, source_width, source_channels = images.shape
+        width, height = _target_dimensions(source_width, source_height, target_megapixels)
         preset_id = ["default", "preset 1", "preset 2", "preset 3"].index(preset)
         style_id = ["default", "natural", "cinematic"].index(style)
         output_channels = 4 if source_channels == 4 else 3
@@ -642,8 +717,8 @@ class Dlss5NeuralRendering(io.ComfyNode):
             torch.empty((height, width), dtype=torch.float16) if diagnostics else None
         )
         rgba = torch.empty((height, width, 4), dtype=torch.float16)
-        progress = _progress(frames)
-        resets: list[int] = []
+        progress = _progress(frames * passes)
+        resets: list[tuple[int, int]] = []
         depth_min, depth_max = float("inf"), float("-inf")
         motion_mean_sum = 0.0
         motion_max = 0.0
@@ -676,57 +751,76 @@ class Dlss5NeuralRendering(io.ComfyNode):
                 motion_confidence=motion_confidence_threshold,
                 diagnostics=diagnostics,
             ) as worker:
-                for frame_index in range(frames):
-                    rgb, alpha = _prepare_frame(images, frame_index, rgba)
-                    depth, reset = estimator.process(rgb)
-                    if not depth_inverted:
-                        depth = 1.0 - depth
-                    if reset:
-                        resets.append(frame_index)
-                    destination = output[frame_index, ..., :3]
-                    worker.process_into(
-                        rgba,
-                        depth.unsqueeze(-1).contiguous(),
-                        destination,
-                        motion_raw,
-                        confidence_raw,
-                        reset=reset,
-                    )
-                    torch.nan_to_num_(destination, nan=0.0, posinf=1.0, neginf=0.0)
-                    destination.clamp_(0.0, 1.0)
-                    if alpha is not None:
-                        output[frame_index, ..., 3].copy_(alpha)
-
-                    if depth_debug is not None:
-                        depth_debug[frame_index].copy_(depth.unsqueeze(-1).expand(-1, -1, 3))
-                    if motion_debug is not None and motion_raw is not None:
-                        motion_debug[frame_index].copy_(_motion_preview(motion_raw))
-                    if confidence_debug is not None and confidence_raw is not None:
-                        confidence_debug[frame_index].copy_(
-                            confidence_raw.unsqueeze(-1).expand(-1, -1, 3)
+                pass_input = images
+                for pass_index in range(passes):
+                    estimator.reset_sequence()
+                    for frame_index in range(frames):
+                        rgb, alpha = _prepare_frame(
+                            pass_input,
+                            frame_index,
+                            rgba,
+                            height,
+                            width,
                         )
+                        depth, reset = estimator.process(rgb)
+                        if not depth_inverted:
+                            depth = 1.0 - depth
+                        if reset:
+                            resets.append((pass_index + 1, frame_index))
+                        destination = output[frame_index, ..., :3]
+                        worker.process_into(
+                            rgba,
+                            depth.unsqueeze(-1).contiguous(),
+                            destination,
+                            motion_raw,
+                            confidence_raw,
+                            reset=reset,
+                        )
+                        torch.nan_to_num_(destination, nan=0.0, posinf=1.0, neginf=0.0)
+                        destination.clamp_(0.0, 1.0)
+                        if alpha is not None:
+                            output[frame_index, ..., 3].copy_(alpha)
 
-                    # Logging must not manufacture another full-resolution
-                    # float32 motion image on every frame.
-                    sampled_depth = depth[::8, ::8]
-                    depth_min = min(depth_min, sampled_depth.min().item())
-                    depth_max = max(depth_max, sampled_depth.max().item())
-                    if motion_raw is not None and confidence_raw is not None:
-                        sampled_motion = motion_raw[::8, ::8].float()
-                        magnitude = torch.linalg.vector_norm(sampled_motion, dim=-1)
-                        motion_mean_sum += magnitude.mean().item()
-                        motion_max = max(motion_max, magnitude.max().item())
-                        motion_nonzero_sum += (magnitude > 0.01).float().mean().item()
-                        confidence_mean_sum += confidence_raw[::8, ::8].float().mean().item()
-                    _progress_step(progress)
+                        # Diagnostic batches always contain the exact guides from the final pass.
+                        if pass_index == passes - 1:
+                            if depth_debug is not None:
+                                depth_debug[frame_index].copy_(
+                                    depth.unsqueeze(-1).expand(-1, -1, 3)
+                                )
+                            if motion_debug is not None and motion_raw is not None:
+                                motion_debug[frame_index].copy_(_motion_preview(motion_raw))
+                            if confidence_debug is not None and confidence_raw is not None:
+                                confidence_debug[frame_index].copy_(
+                                    confidence_raw.unsqueeze(-1).expand(-1, -1, 3)
+                                )
+
+                        # Logging must not manufacture another full-resolution
+                        # float32 motion image on every frame.
+                        sampled_depth = depth[::8, ::8]
+                        depth_min = min(depth_min, sampled_depth.min().item())
+                        depth_max = max(depth_max, sampled_depth.max().item())
+                        if motion_raw is not None and confidence_raw is not None:
+                            sampled_motion = motion_raw[::8, ::8].float()
+                            magnitude = torch.linalg.vector_norm(sampled_motion, dim=-1)
+                            motion_mean_sum += magnitude.mean().item()
+                            motion_max = max(motion_max, magnitude.max().item())
+                            motion_nonzero_sum += (magnitude > 0.01).float().mean().item()
+                            confidence_mean_sum += confidence_raw[::8, ::8].float().mean().item()
+                        _progress_step(progress)
+                    # The next pass reads each completed frame into the staging surface before
+                    # overwriting that same output frame, so no second video-sized batch is needed.
+                    pass_input = output
         finally:
             estimator.close()
 
-        divisor = max(frames, 1)
+        divisor = max(frames * passes, 1)
         if diagnostics:
             logging.info(
-                "[DLSS5-Neural-Rendering] causal guides: Depth Anything V2 Small %.4f..%.4f; "
+                "[DLSS5-Neural-Rendering] %d pass(es), %dx%d: Depth Anything 3 Mono Large %.4f..%.4f; "
                 "D3D12 flow mean %.4f px max %.4f px nonzero %.2f%%; confidence %.4f; resets %s",
+                passes,
+                width,
+                height,
                 depth_min,
                 depth_max,
                 motion_mean_sum / divisor,
@@ -737,8 +831,11 @@ class Dlss5NeuralRendering(io.ComfyNode):
             )
         else:
             logging.info(
-                "[DLSS5-Neural-Rendering] causal guides: Depth Anything V2 Small %.4f..%.4f; "
+                "[DLSS5-Neural-Rendering] %d pass(es), %dx%d: Depth Anything 3 Mono Large %.4f..%.4f; "
                 "D3D12 flow remained GPU-resident; resets %s",
+                passes,
+                width,
+                height,
                 depth_min,
                 depth_max,
                 resets,

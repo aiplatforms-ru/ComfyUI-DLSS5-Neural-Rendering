@@ -11,9 +11,11 @@ supplied with SDK version 310.7.0. The MIT license in this repository does not
 relicense NVIDIA code incorporated into the prebuilt worker. The experimental
 `nvngx_dlssnr.dll` is not part of this custom node and is not redistributed.
 
-The automatic depth path uses Depth Anything V2 Small, distributed under
-[Apache-2.0](https://github.com/DepthAnything/Depth-Anything-V2/blob/main/LICENSE).
-Its weights are downloaded from the official model repository on first use.
+The automatic depth path uses Depth Anything 3 Mono Large through ComfyUI's
+native implementation. Depth Anything 3 is distributed under
+[Apache-2.0](https://github.com/ByteDance-Seed/Depth-Anything-3/blob/main/LICENSE).
+The model file is supplied separately under `ComfyUI/models/geometry_estimation/`
+and is not redistributed by this repository.
 
 The native causal motion implementation is an independently written D3D12
 coarse-to-fine optical-flow pipeline. Its design was informed by the LumeniteFX

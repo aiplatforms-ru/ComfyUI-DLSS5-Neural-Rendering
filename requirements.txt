@@ -1,2 +1,1 @@
-transformers>=4.45
-huggingface-hub>=0.24
+# No extra Python packages are required. Depth Anything 3 is loaded through ComfyUI.

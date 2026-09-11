@@ -1,13 +1,10 @@
 [project]
 name = "dlss5-neural-rendering"
 description = "Experimental ComfyUI node for applying NVIDIA DLSS 5 Neural Rendering to images and video."
-version = "0.1.1"
+version = "0.2.0"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
-dependencies = [
-    "transformers>=4.45",
-    "huggingface-hub>=0.24",
-]
+dependencies = []
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: GPU :: NVIDIA CUDA",

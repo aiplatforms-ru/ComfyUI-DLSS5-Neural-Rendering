@@ -32,9 +32,11 @@ All three examples use the same input and default preset; only `style` changes.
 ## Requirements
 
 - Windows 10/11, a supported NVIDIA RTX GPU, and a compatible NVIDIA driver.
+- A current ComfyUI build with native Depth Anything 3 support.
 - An NVIDIA-signed `nvngx_dlssnr.dll`. The DLL is **not** redistributed here.
 - The included `bin/dlssnr_worker.exe` (already present in this repository).
-- The Python packages in `requirements.txt`, which add the depth-model loader.
+- `depth_anything_3_mono_large.safetensors` in ComfyUI's `geometry_estimation`
+  model folder. The model is **not** redistributed here.
 
 ## Installation — Windows portable build
 
@@ -50,8 +52,10 @@ ComfyUI_windows_portable\
     │       ├── nodes.py
     │       └── ...
     └── models\
-        └── dlssnr\
-            └── nvngx_dlssnr.dll
+        ├── dlssnr\
+        │   └── nvngx_dlssnr.dll
+        └── geometry_estimation\
+            └── depth_anything_3_mono_large.safetensors
 ```
 
 ### 1. Install the custom node
@@ -61,7 +65,6 @@ Open PowerShell in the **portable root folder** — the folder containing both
 
 ```powershell
 git clone https://github.com/aiplatforms-ru/ComfyUI-DLSS5-Neural-Rendering.git .\ComfyUI\custom_nodes\ComfyUI-DLSS5-Neural-Rendering
-.\python_embeded\python.exe -m pip install -r .\ComfyUI\custom_nodes\ComfyUI-DLSS5-Neural-Rendering\requirements.txt
 ```
 
 Alternatively, download the repository ZIP and extract its contents to exactly:
@@ -99,7 +102,20 @@ E:\ComfyUI\ComfyUI\models\dlssnr\nvngx_dlssnr.dll
 The node has no automatic dependency on any of those locations. The DLL is not
 included in this repository.
 
-### 3. Restart ComfyUI
+### 3. Install Depth Anything 3 Mono Large
+
+Put the ComfyUI single-file model at:
+
+```text
+<portable root>\ComfyUI\models\geometry_estimation\depth_anything_3_mono_large.safetensors
+```
+
+The compatible model is available from
+[Comfy-Org/Depth-Anything-3](https://huggingface.co/Comfy-Org/Depth-Anything-3/blob/main/geometry_estimation/depth_anything_3_mono_large.safetensors).
+If ComfyUI's built-in Depth Anything 3 workflow has already downloaded it, no
+additional model copy is needed.
+
+### 4. Restart ComfyUI
 
 ComfyUI imports custom-node Python code only during startup. Fully close and
 restart ComfyUI after installing or updating this node.
@@ -112,7 +128,6 @@ Clone the repository under the same ComfyUI installation that you run:
 cd C:\path\to\ComfyUI\custom_nodes
 git clone https://github.com/aiplatforms-ru/ComfyUI-DLSS5-Neural-Rendering.git
 cd ComfyUI-DLSS5-Neural-Rendering
-python -m pip install -r requirements.txt
 ```
 
 Copy the DLL to:
@@ -121,9 +136,15 @@ Copy the DLL to:
 C:\path\to\ComfyUI\models\dlssnr\nvngx_dlssnr.dll
 ```
 
-On first use, the node downloads the Apache-2.0 Depth Anything V2 Small model
-into the same `ComfyUI/models/dlssnr/` directory. Motion estimation is provided
-by the included D3D12 worker and does not download another neural model.
+Copy `depth_anything_3_mono_large.safetensors` to:
+
+```text
+C:\path\to\ComfyUI\models\geometry_estimation\depth_anything_3_mono_large.safetensors
+```
+
+The node loads it through ComfyUI's own Depth Anything 3 implementation. It does
+not create a Transformers cache or download a second copy. Motion estimation is
+provided by the included D3D12 worker and does not require another neural model.
 
 ## Runtime location
 
@@ -156,7 +177,16 @@ The script obtains the official NVIDIA DLSS 310.7.0 SDK from
 
 ## Inputs and video behavior
 
-- `independent frames` runs Depth Anything V2 Small separately on every image,
+- `target_megapixels = 0` preserves the input dimensions. A positive value
+  resizes every frame once before processing, preserving aspect ratio and rounding
+  dimensions to a multiple of 8. For example, `4.0` produces approximately four
+  million pixels per frame.
+- `passes` performs 1-5 genuinely chained DLSS-NR evaluations. Pass 2 consumes
+  pass 1's output, and so on. Depth Anything 3 guides, D3D12 optical flow, and
+  NGX sequence history are restarted and recomputed for every pass. The model is
+  loaded only once, and later passes reuse the output tensor in place instead of
+  allocating another video-sized batch.
+- `independent frames` runs Depth Anything 3 Mono Large separately on every image,
   normalizes each guide independently, and resets NGX history for every frame.
 - `video sequence` is strictly causal. For frame N, Depth Anything sees only N.
   The native D3D12 worker compares N with its previous luminance pyramid and
@@ -178,15 +208,16 @@ The script obtains the official NVIDIA DLSS 310.7.0 SDK from
 - `depth_preview`, `motion_preview`, and `motion_confidence` are inspectable IMAGE
   outputs generated from the exact guide arrays sent to the native worker. They
   are allocated only when connected, so unused diagnostics consume no video-sized
-  batch. Depth is grayscale; motion hue shows direction and brightness magnitude.
+  batch. With multiple passes they show the exact guides from the final pass.
+  Depth is grayscale; motion hue shows direction and brightness magnitude.
 - `adapter_index = -1` automatically selects the first suitable NVIDIA adapter.
   Non-negative indices select among NVIDIA adapters in high-performance order.
 
 DLSS Neural Rendering was designed for raster inputs with true depth and motion.
 Unity obtains those buffers directly from its scene renderer. An encoded video
-contains neither buffer, so this node reconstructs depth with Depth Anything and
-motion with the native D3D12 optical-flow shader rather than substituting flat or
-zero placeholders.
+contains neither buffer, so this node reconstructs depth with Depth Anything 3
+and motion with the native D3D12 optical-flow shader rather than substituting
+flat or zero placeholders.
 
 ## Technical notes
 
@@ -196,6 +227,9 @@ time. Motion, its luminance pyramid, and its one-frame history remain on the D3D
 GPU. Motion/confidence are read back only when their diagnostic outputs are
 connected. The worker keeps one D3D12 device and one feature instance alive for
 the sequence, exactly so both flow and NGX history persist between frames.
+Depth Anything 3 uses ComfyUI's native single-file model loader and model manager;
+the cached model object is reused across executions and can be offloaded by
+ComfyUI when VRAM is needed elsewhere.
 
 The feature-18 contract is experimental and not part of the stable public NGX
 API. Runtime 310.x is the currently tested ABI. The architecture is informed by
@@ -214,7 +248,7 @@ their own licenses. See `THIRD_PARTY_NOTICES.md` before redistributing a build.
 References:
 
 - <https://github.com/Kuan-Mi/UnityDLSSNR>
-- <https://github.com/DepthAnything/Depth-Anything-V2>
+- <https://github.com/ByteDance-Seed/Depth-Anything-3>
 - <https://github.com/umar-afzaal/LumeniteFX>
 - <https://gpuopen.com/manuals/fidelityfx_sdk/techniques/optical-flow/>
 - <https://github.com/jlrouzies-fr/DLSS5-Feeder>

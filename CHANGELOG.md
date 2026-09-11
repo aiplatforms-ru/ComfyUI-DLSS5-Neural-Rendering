@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.0 - 2026-09-11
+
+- Add 1-5 real chained DLSS Neural Rendering passes in one node.
+- Recompute depth, motion, and NGX history for every pass.
+- Add optional aspect-ratio-preserving input scaling by target megapixels.
+- Replace Depth Anything V2 Small with ComfyUI-native Depth Anything 3 Mono Large.
+- Reuse `models/geometry_estimation/depth_anything_3_mono_large.safetensors`
+  without a separate Transformers download or model copy.
+
 ## 0.1.1 - 2026-09-11
 
 - Store and discover `nvngx_dlssnr.dll` under `ComfyUI/models/dlssnr/`.
